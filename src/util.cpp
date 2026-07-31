@@ -32,14 +32,14 @@ struct udp6_pseudo_header {
 };
 
 /**
- * @code _addr_is_primary(ifname, addr, addr_len);
+ * @code addr_is_primary_impl(ifname, addr, addr_len);
  * @brief Check if the given address is primary on the interface by querying ConfigDB.
  * @param ifname    interface name
  * @param addr      pointer to the address (in_addr for IPv4 or in6_addr for IPv6)
  * @param addr_len  length of the address (4 for IPv4, 16 for IPv6)
  * @return          true if the address is primary, false if secondary or not found
  */
-static bool _addr_is_primary(const std::string &ifname, const uint8_t *addr, size_t addr_len)
+static bool addr_is_primary_impl(const std::string &ifname, const uint8_t *addr, size_t addr_len)
 {
     auto match_pattern = std::string("*INTERFACE|" + ifname + "|*");
     auto keys = mConfigDbPtr->keys(match_pattern);
@@ -73,12 +73,12 @@ static bool _addr_is_primary(const std::string &ifname, const uint8_t *addr, siz
 
 bool addr_is_primary(const std::string &ifname, const in_addr *addr)
 {
-    return _addr_is_primary(ifname, (const uint8_t *)addr, sizeof(struct in_addr));
+    return addr_is_primary_impl(ifname, (const uint8_t *)addr, sizeof(struct in_addr));
 }
 
 bool addr6_is_primary(const std::string &ifname, const in6_addr *addr)
 {
-    return _addr_is_primary(ifname, (const uint8_t *)addr, sizeof(struct in6_addr));
+    return addr_is_primary_impl(ifname, (const uint8_t *)addr, sizeof(struct in6_addr));
 }
 
 bool intf_is_standby(const std::string &ifname)
