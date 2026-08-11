@@ -180,22 +180,9 @@ int dhcp_devman_setup_dual_tor_mode(const char *name)
 
 bool dhcp_devman_is_tracked_interface(const std::string &ifname)
 {
-    auto itr = intfs.find(ifname);
-    if (itr != intfs.end()) {
-        return true;
-    }
-    auto vlan_itr = vlan_map.find(ifname);
-    if (vlan_itr != vlan_map.end()) {
-        return true;
-    }
-    auto portchan_itr = portchan_map.find(ifname);
-    if (portchan_itr != portchan_map.end()) {
-        return true;
-    }
-    if (ifname == mgmt_ifname) {
-        return true;
-    }
-    return false;
+    return intfs.find(ifname) != intfs.end() ||
+           !dhcp_devman_get_parent_ifname(ifname).empty() ||
+           ifname == mgmt_ifname;
 }
 
 /**
@@ -248,7 +235,10 @@ static void update_portchannel_mapping()
         auto second = key.find_last_of('|');
         auto portchannel = key.substr(first + 1, second - first - 1);
         auto ifname = key.substr(second + 1);
-        if (intfs.find(portchannel) == intfs.end()) {
+        bool portchannel_is_context = intfs.find(portchannel) != intfs.end();
+        bool portchannel_is_vlan_member = vlan_map.find(portchannel) != vlan_map.end();
+        // Dual-ToR downlink counters require MUX attribution that is unavailable on a nested PortChannel.
+        if (!portchannel_is_context && (!portchannel_is_vlan_member || dual_tor_mode)) {
             all_skipped_ifname += "<" + ifname + ", " + portchannel + ">, ";
             continue;
         }
@@ -296,7 +286,7 @@ int dhcp_devman_init()
     agg_dev_all = "Agg-" + downstream_ifname;
     agg_dev_prefix = agg_dev_all + "-";
 
-    // vlan and its members, portchannel and its members are initialized regardless of whether they are in cmdline
+    // PortChannel members depend on VLAN mappings to recognize a PortChannel under a monitored VLAN.
     update_vlan_mapping();
     update_portchannel_mapping();
 
@@ -315,21 +305,59 @@ void dhcp_devman_free()
     intfs.clear();
 }
 
-const dhcp_device_context_t *dhcp_devman_get_device_context(const std::string &ifname)
+static constexpr unsigned int MAX_CONTEXT_DEPTH = 3;
+
+std::string dhcp_devman_get_parent_ifname(const std::string &ifname)
 {
+    if (intfs.find(ifname) != intfs.end()) {
+        return "";
+    }
+    const auto vlan = vlan_map.find(ifname);
+    if (vlan != vlan_map.end() && ifname != vlan->second) {
+        return vlan->second;
+    }
+    const auto port_channel = portchan_map.find(ifname);
+    if (port_channel != portchan_map.end() && ifname != port_channel->second) {
+        return port_channel->second;
+    }
+    return "";
+}
+
+/**
+ * @code get_device_context(ifname, depth);
+ *
+ * @brief Follow parent mappings until reaching a tracked input interface
+ *
+ * @param ifname    Interface name to resolve
+ * @param depth     Current parent traversal depth
+ *
+ * @return Tracked interface context, or NULL when no context is found
+ */
+static const dhcp_device_context_t *get_device_context(
+    const std::string &ifname, unsigned int depth)
+{
+    if (depth > MAX_CONTEXT_DEPTH) {
+        syslog_debug(LOG_WARNING, "Exceeded interface membership depth at %s", ifname.c_str());
+        return NULL;
+    }
     const auto iter = intfs.find(ifname);
     if (iter != intfs.end()) {
         return iter->second;
     }
-    const auto vlan = vlan_map.find(ifname);
-    if (vlan != vlan_map.end() && ifname != vlan->second) {
-        return dhcp_devman_get_device_context(vlan->second);
-    }
-    const auto port_channel = portchan_map.find(ifname);
-    if (port_channel != portchan_map.end() && ifname != port_channel->second) {
-        return dhcp_devman_get_device_context(port_channel->second);
-    }
-    return NULL;
+    const std::string parent_ifname = dhcp_devman_get_parent_ifname(ifname);
+    return parent_ifname.empty() ? NULL : get_device_context(parent_ifname, depth + 1);
+}
+
+const dhcp_device_context_t *dhcp_devman_get_device_context(const std::string &ifname)
+{
+    return get_device_context(ifname, 0);
+}
+
+std::string dhcp_devman_get_agg_counter_ifname(const std::string &ifname)
+{
+    const std::string parent_ifname = dhcp_devman_get_parent_ifname(ifname);
+    return parent_ifname.empty() ? agg_dev_all :
+           get_agg_counter_ifname(parent_ifname);
 }
 
 void dhcp_devman_print_all_status(dhcp_counters_type_t type)
