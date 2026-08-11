@@ -19,8 +19,11 @@
 #include "dhcp_check_profile.h"   /** to get dhcp/v6 check profile */
 #include "util.h"
 
+// Bound one callback to keep health/DB events responsive during packet bursts.
+static constexpr int MAX_PACKETS_PER_CALLBACK = 64;
+
 /**
- * @code _increase_cache_counter(ifname, sock, type);
+ * @code increase_single_cache_counter(ifname, sock, type);
  * @brief helper function to increase cache counter. Simple increase of counter, no complications. In the event of
  *        extremely unexpected nonexistent ifname, just fail
  * @param ifname       interface name
@@ -28,9 +31,9 @@
  * @param type         message type
  * @return             none
  */
-static inline void _increase_cache_counter(const std::string &ifname, int sock, uint8_t type)
+static inline void increase_single_cache_counter(const std::string &ifname, int sock, uint8_t type)
 {
-    syslog_debug(LOG_INFO, "_increase_cache_counter: increasing cache counter for ifname %s, sock %d, type %d",
+    syslog_debug(LOG_INFO, "increase_single_cache_counter: increasing cache counter for ifname %s, sock %d, type %d",
                  ifname.c_str(), sock, type);
     sock_mgr_get_sock_info(sock).all_counters.at(ifname)[type]++;
 }
@@ -48,7 +51,7 @@ static inline void _increase_cache_counter(const std::string &ifname, int sock, 
  */
 static void increase_cache_counter(const std::string &ifname, const dhcp_device_context_t *context, int sock, uint8_t type, bool dup_to_context=false)
 {
-    _increase_cache_counter(ifname, sock, type);
+    increase_single_cache_counter(ifname, sock, type);
 
     // we seperate mgmt interface from others and do not increase agg counter
     if (mgmt_ifname != "" && mgmt_ifname.compare(context->intf) == 0) {
@@ -57,7 +60,7 @@ static void increase_cache_counter(const std::string &ifname, const dhcp_device_
 
     // when ifname belongs to another context ifname, increase the aggregate counter for that context, 
     // else when ifname is the context, we increase agg counter for all.
-    _increase_cache_counter(get_agg_counter_ifname(ifname, context->intf), sock, type);
+    increase_single_cache_counter(get_agg_counter_ifname(ifname, context->intf), sock, type);
     
     // optionally duplicate to context ifname, it will only be true when this is standby physical interface under a vlan on a dual tor
     if (dup_to_context) {
@@ -864,11 +867,14 @@ void callback_common(int fd, short event, void *arg)
 {
     ssize_t buffer_sz;
     struct sockaddr_ll sll;
-    socklen_t slen = sizeof(sll);
     sock_info_t &sock_info = sock_mgr_get_sock_info(fd);
 
-    while ((buffer_sz = recvfrom(fd, sock_info.buffer, sock_info.snaplen, MSG_DONTWAIT, (struct sockaddr *)&sll, &slen)) > 0) 
-    {
+    for (int packet_count = 0; packet_count < MAX_PACKETS_PER_CALLBACK; packet_count++) {
+        socklen_t slen = sizeof(sll);
+        if ((buffer_sz = recvfrom(fd, sock_info.buffer, sock_info.snaplen, MSG_DONTWAIT,
+                                  (struct sockaddr *)&sll, &slen)) <= 0) {
+            break;
+        }
         char ifname_buf[IF_NAMESIZE];
         if (if_indextoname(sll.sll_ifindex, ifname_buf) == NULL) {
             syslog_debug(LOG_WARNING, "if_indextoname: invalid input interface index %d %s", sll.sll_ifindex, strerror(errno));

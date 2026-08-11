@@ -155,11 +155,11 @@ static void print_bpf_prog(const struct bpf_program *bp) {
 }
 
 /**
- * @code _compile_bpf_prog(handle, bp, filter, fprog)
+ * @code compile_bpf_prog(handle, bp, filter, fprog)
  *
  * @brief helper function to compile filter to bpf byte code and store in fprog
  */
-static int _compile_bpf_prog(pcap_t *handle, struct bpf_program *bp, const char *filter, struct sock_fprog *fprog){
+static int compile_bpf_prog(pcap_t *handle, struct bpf_program *bp, const char *filter, struct sock_fprog *fprog){
     syslog(LOG_INFO, "Compiling filter %s to bpf prog", filter);
 
     if (pcap_compile(handle, bp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
@@ -215,7 +215,7 @@ static int sock_mgr_compile_all_bpf_prog()
 
     struct bpf_program bp;
     for (auto &[sock, info] : sock_map) {
-        if (_compile_bpf_prog(handle, &bp, info.filter, &info.bpf_prog) < 0) {
+        if (compile_bpf_prog(handle, &bp, info.filter, &info.bpf_prog) < 0) {
             syslog(LOG_ALERT, "Failed to compile %s into bpf prog", info.filter);
             sock_mgr_free_all_bpf_prog();
             pcap_close(handle);
